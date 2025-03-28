@@ -58,7 +58,7 @@ class Forecaster:
         self.used_models = {}   # chosen models for forecasting
         self.weather = pl.LazyFrame()   # weather dataframe
         self.length_to_predict = 0  # length to predict everytime when calling forecast
-        self.start_ts = datetime.now()   # timestamp when simulation starts
+        self.start_ts = datetime.now(tz=pytz.utc)   # timestamp when simulation starts
         self.refit_period = 0   # period, after which models should be refitted
 
     ########################################## PUBLIC METHODS ##########################################
@@ -140,7 +140,7 @@ class Forecaster:
         self.weather = self.general['weather']
 
         # get start time
-        self.start_ts = self.general['general']['time']['start']
+        self.start_ts = datetime.fromisoformat(str(self.general['general']['time']['start'])).astimezone(pytz.utc)
 
         # get length to predict
         self.length_to_predict = self.agentDB.account['ems']['fcasts']['horizon']
@@ -159,8 +159,8 @@ class Forecaster:
         # assign market config
         market_config = self.agentDB.account['ems'][c.TC_MARKET]['fcast']  # get forecast config for market
         for market_name in self.marketsDB.keys():   # assign market config dict for each market
-            wholesale_id = market_name + '_wholesale'
-            local_id = market_name + '_local'
+            wholesale_id = f'{market_name}_{c.TT_RETAIL}'
+            local_id = f'{market_name}_{c.TT_MARKET}'
 
             # add to config dict
             self.config_dict[wholesale_id] = market_config['wholesale']
@@ -253,7 +253,7 @@ class Forecaster:
             resolution = f.calculate_time_resolution(target_wholesale)
 
             # add offset day(s) before simulation with the same data
-            offset = self.config_dict[market_name + '_wholesale']['naive']['offset']    # here method is hard-coded
+            offset = self.config_dict[f'{market_name}_{c.TT_RETAIL}']['naive']['offset']    # here method is hard-coded
 
             day_before = f.slice_dataframe_between_times(target_df=target_wholesale, reference_ts=self.start_ts,
                                                          duration=c.DAYS_TO_SECONDS * offset + resolution)
@@ -269,12 +269,12 @@ class Forecaster:
             target_wholesale = target_wholesale.drop('index', c.TC_MARKET, c.TC_NAME, c.TC_REGION, 'retailer')
 
             # initial prepare for the wholesale market
-            self.train_data[market_name + '_wholesale'] = {c.K_TARGET: target_wholesale}
+            self.train_data[f'{market_name}_{c.TT_RETAIL}'] = {c.K_TARGET: target_wholesale}
 
             # initial prepare for the local market
-            target_local = target_wholesale.select(c.TC_TIMESTAMP, 'energy_price_sell')\
-                                           .rename({'energy_price_sell': 'energy_price_local'})
-            self.train_data[market_name + '_local'] = {c.K_TARGET: target_local}
+            target_local = target_wholesale.select(c.TC_TIMESTAMP, f'{c.MCT_ENERGY}_{c.TC_PRICE}_{c.PF_IN}')\
+                                           .rename({f'{c.MCT_ENERGY}_{c.TC_PRICE}_{c.PF_IN}': 'energy_price_local'})
+            self.train_data[f'{market_name}_{c.TT_MARKET}'] = {c.K_TARGET: target_local}
 
     def __prepare_plants_target_data(self):
         """
@@ -354,7 +354,7 @@ class Forecaster:
         chosen_model = self.config_dict[id]['method']  # keyword of the chosen model as string
 
         # refit model if needed
-        offset = (current_ts - self.start_ts.replace(tzinfo=pytz.UTC)).seconds  # offset between current ts and start ts
+        offset = (current_ts - self.start_ts).seconds  # offset between current ts and start ts
         # check offset % refit period to see if the current time is exactly the beginning of a new refitting period
         if offset % self.refit_period == 0:
             self.used_models[id].fit(current_ts=current_ts, length_to_predict=self.length_to_predict,
@@ -382,19 +382,18 @@ class Forecaster:
         # generate a column contains time index
         timestamps = f.slice_dataframe_between_times(target_df=self.agentDB.timeseries, reference_ts=current_ts,
                                                      duration=self.length_to_predict).select(c.TC_TIMESTAMP)
+
         # add timestep column
         timestamps = timestamps.with_columns(pl.col(c.TC_TIMESTAMP).alias(c.TC_TIMESTEP))
 
         # get time info from original dataframe
         datetime_index = timestamps.select(c.TC_TIMESTAMP)
         dtype = datetime_index.dtypes[0]
-        time_unit = dtype.time_unit
-        time_zone = dtype.time_zone
 
         # adjust timestamp column to current time and keep the datatype
         timestamps = timestamps.with_columns(pl.lit(current_ts)
                                              .alias(c.TC_TIMESTAMP)
-                                             .cast(pl.Datetime(time_unit=time_unit, time_zone=time_zone)))
+                                             .cast(pl.Datetime(time_unit=dtype.time_unit, time_zone=dtype.time_zone)))
 
         forecasts_list = [timestamps]     # list which will contain all forecast dataframes
 

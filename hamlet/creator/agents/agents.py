@@ -111,12 +111,12 @@ class Agents:
         self.scenario_path = scenario_path
 
         # Load setup plus configuration and/or agent file
-        self.setup = f.load_file(path=os.path.join(self.config_root, 'config_setup.yaml'))
+        self.setup = f.load_file(path=os.path.join(self.config_root, 'setup.yaml'))
         self.grid = None  # grid file only required if agents are created from grid file
         self.config = None
         self.excel = None
         try:
-            self.config = f.load_file(path=os.path.join(self.config_path, 'config_agents.yaml'))
+            self.config = f.load_file(path=os.path.join(self.config_path, 'agents.yaml'))
         except FileNotFoundError:
             try:
                 self.excel = f.load_file(path=os.path.join(self.config_path, 'agents.xlsx'))
@@ -131,14 +131,12 @@ class Agents:
 
         # Available types of agents
         from hamlet.creator.agents.sfh import Sfh
-        from hamlet.creator.agents.mfh import Mfh
         from hamlet.creator.agents.ctsp import Ctsp
         from hamlet.creator.agents.industry import Industry
         from hamlet.creator.agents.producer import Producer
         from hamlet.creator.agents.storage import Storage
         self.types = {
             c.A_SFH: Sfh,
-            c.A_MFH: Mfh,
             c.A_CTSP: Ctsp,
             c.A_INDUSTRY: Industry,
             c.A_PRODUCER: Producer,
@@ -154,6 +152,7 @@ class Agents:
                 'func_ts': self.__make_timeseries_heat,
             },
             c.P_DHW: {
+                'func_ts': self.__make_timeseries_dhw,
             },
             c.P_PV: {
                 'specs': self.__timeseries_from_specs_pv,
@@ -414,7 +413,7 @@ class Agents:
         # Length of the forecasting period in seconds
         fcast_period = account[c.K_EMS]['fcasts']['horizon']
         # Start of the simulation in UTC
-        start = self.setup['time']['start'].replace(tzinfo=datetime.timezone.utc)
+        start = datetime.datetime.fromisoformat(str(self.setup['time']['start'])).astimezone(datetime.timezone.utc)
         # Start of the forecasting period in UTC
         start_fcast_train = start - train_period
         # End of the simulation in UTC (one day added to ensure no foreward forecasting issues)
@@ -472,13 +471,14 @@ class Agents:
             except ValueError:
                 continue
 
-            # Add general information to the plant dictionary
-            plant_dict["type"] = plant
-
-            # Process each device individually (agent can have more than one of each type)
+            # Process each device individually
             for num_plant in range(num_plants):
+
+                # Add plant type
+                plant_dict["type"] = plant
+
                 # Generate and store plant ID
-                plant_id = self._gen_new_ids()
+                plant_id = f.gen_ids()
                 plant_dict["id"] = plant_id
                 plants_ids += [plant_id]
 
@@ -492,7 +492,7 @@ class Agents:
                 setpoints[plant_id] = self.__init_vals(df=setpoints)
 
                 # Add and process additional plant information
-                plant_dict.update(info)
+                plant_dict.update(copy.deepcopy(info))
                 plant_dict = self.__clean_indexed_info(data=plant_dict, key='sizing', index=num_plant)
 
                 # Add time series if applicable
@@ -501,7 +501,7 @@ class Agents:
                         file_path=os.path.join(self.input_path, 'agents', agent_type, plant,
                                                plant_dict['sizing']['file']),
                         plant_id=plant_id, plant_dict=plant_dict,
-                        delta=pd.Timedelta(f"{(timeseries.index[1] - timeseries.index[0]) / 3}S"))
+                        delta=pd.Timedelta(f"{(timeseries.index[1] - timeseries.index[0])}S"))
                     timeseries = timeseries.join(ts)
                 except KeyError:
                     specs = None
@@ -509,7 +509,8 @@ class Agents:
                 # Add state of charge (SOC) if applicable
                 try:
                     socs[plant_id] = self.__init_vals(df=socs,
-                                                      vals=round(info["sizing"]["soc"] * info["sizing"]["capacity"]))
+                                                      vals=round(plant_dict["sizing"]["soc"]
+                                                                 * plant_dict["sizing"]["capacity"]))
                 except KeyError:
                     pass
 
@@ -519,9 +520,8 @@ class Agents:
 
                 # Add plant information to the main dictionary
                 plants_dict[plant_id] = plant_dict
-
-            # Reset for the next entry
-            plant_dict = {}
+                # Reset for the next entry
+                plant_dict = {}
 
         # Add forecast columns
         forecasts = pd.DataFrame(columns=timeseries.columns, index=forecasts.index)
@@ -540,7 +540,6 @@ class Agents:
             None
 
         """
-
         # Create the agent files
         for key, value in data.items():
             f.save_file(path=os.path.join(path, key), data=value)
@@ -1093,6 +1092,11 @@ class Agents:
         df = df['heat'].round().astype(int).to_frame()
 
         return df
+
+    @staticmethod
+    def __make_timeseries_dhw(df: pd.DataFrame, plant_dict: dict) -> pd.DataFrame:
+        """Ensures that values are integers and rounds them to the nearest integer."""
+        return df.round().astype(int)
 
     @staticmethod
     def __list_to_dict(input_list: list, separator: str = '/') -> dict:
@@ -2009,18 +2013,6 @@ class Agents:
             return Agents._get_closest_sorted(search_list, val)
 
         return min(enumerate(search_list), key=lambda x: abs(x[1] - val))
-
-    @staticmethod
-    def _gen_new_ids(n: int = 1, length: int = 15) -> Union[str, list[str]]:
-        """creates random ID"""
-        ids = []
-        for _ in range(n):
-            ids.append("".join(random.choices(string.ascii_letters + string.digits, k=length)))
-
-        if len(ids) == 1:
-            return ids[0]
-        else:
-            return ids
 
 
 # Playground

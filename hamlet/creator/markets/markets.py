@@ -12,9 +12,7 @@ import datetime
 import time
 import shutil
 from pprint import pprint
-# from lfm import Lfm
-# from lhm import Lhm
-# from lh2m import Lh2m
+import hamlet.constants as c
 
 
 class Markets:
@@ -28,19 +26,19 @@ class Markets:
         self.region = self.config_path.rsplit(os.sep, 1)[1]
 
         # Load setup plus configuration and/or agent file
-        self.setup = self._load_file(path=os.path.join(self.config_root, 'config_setup.yaml'))
-        self.config = self._load_file(path=os.path.join(self.config_path, 'config_markets.yaml'))
+        self.setup = self._load_file(path=os.path.join(self.config_root, 'setup.yaml'))
+        self.config = self._load_file(path=os.path.join(self.config_path, 'markets.yaml'))
 
         # Available types of markets
-        from hamlet.creator.markets.lem import Lem
-        # from hamlet.creator.markets.lfm import Lfm  # currently not implemented
-        # from hamlet.creator.markets.lhm import Lhm  # currently not implemented
-        # from hamlet.creator.markets.lh2m import Lh2m  # currently not implemented
+        from hamlet.creator.markets.electricity import ElectricityMarket
+        # from hamlet.creator.markets.lfm import FlexibilityMarket  # currently not implemented
+        # from hamlet.creator.markets.lhm import HeatMarket  # currently not implemented
+        # from hamlet.creator.markets.lh2m import HydrogenMarket  # currently not implemented
         self.types = {
-            'lem': Lem,
-            # 'lfm': Lfm,
-            # 'lhm': Lhm,
-            # 'lh2m': Lh2m,
+            c.MT_ELECTRICITY: ElectricityMarket,
+            c.MT_FLEXIBILITY: None,
+            c.MT_HEAT: None,
+            c.MT_H2: None,
         }
 
     def create_markets(self, file_type: str = 'ft'):
@@ -57,26 +55,29 @@ class Markets:
                 name = key
             except IndexError:
                 name = None
-            if market_type in self.types:
-                if config['active']:
-                    # Create market dict
-                    dict_markets[key] = {}
+            if market_type in self.types and config['active']:
+                # Create market dict
+                dict_markets[key] = {}
 
-                    # Create market
-                    market = self.types[market_type](market=config, name=name,
-                                                     config_path=self.config_path,
-                                                     input_path=self.input_path,
-                                                     scenario_path=self.scenario_path,
-                                                     config_root=self.config_root)
+                # Make sure that timesteps match with setup timestep
+                self.__check_for_matching_timesteps(self.setup, config, key, self.region)
 
-                    # Create market timetable
-                    dict_markets[key]['timetable'] = market.create_market_from_config()
+                # Create market
+                market = self.types[market_type](market=config, name=name,
+                                                 config_path=self.config_path,
+                                                 input_path=self.input_path,
+                                                 scenario_path=self.scenario_path,
+                                                 config_root=self.config_root)
 
-                    # Create retailers
-                    dict_markets[key]['retailers'] = market.create_retailers_from_config(timetable=dict_markets[key]['timetable'])
+                # Create market timetable
+                dict_markets[key]['timetable'] = market.create_market_from_config()
 
-                    # Save original configuration
-                    dict_markets[key]['config'] = config
+                # Create retailers
+                dict_markets[key]['retailers'] = (
+                    market.create_retailers_from_config(timetable=dict_markets[key]['timetable']))
+
+                # Save original configuration
+                dict_markets[key]['config'] = config
             else:
                 raise ValueError(f'Market type "{market_type}" not available. Available types are: {self.types.keys()}')
 
@@ -99,7 +100,7 @@ class Markets:
         # Save individual information
         for name, market in dict_markets.items():
             # Get market type from name
-            market_type = name.split('_', 1)[0]
+            market_type = market['config']['type']
 
             # Path of the folder in which all the market's files are to be stored
             path = os.path.join(self.scenario_path, 'markets', market_type, name)
@@ -185,5 +186,19 @@ class Markets:
                 shutil.rmtree(path)
                 os.mkdirs(path)
         time.sleep(0.0001)
+
+    @staticmethod
+    def __check_for_matching_timesteps(setup, config, market_name, region):
+
+        if ((config['clearing']['timing']['opening'] < setup['time']['timestep'])
+                or (config['clearing']['timing']['duration'] < setup['time']['timestep'])
+                or (config['clearing']['timing']['frequency'] < setup['time']['timestep'])):
+            raise ValueError(f'Timesteps in market configuration must be greater than or equal to '
+                             f'the setup timestep. Check market {market_name} in region {region}.')
+        if ((config['clearing']['timing']['opening'] % setup['time']['timestep'] != 0)
+                or (config['clearing']['timing']['duration'] % setup['time']['timestep'] != 0)
+                or (config['clearing']['timing']['frequency'] % setup['time']['timestep'] != 0)):
+            raise ValueError(f'Timesteps in market configuration must be multiples of the setup timestep. '
+                             f'Check market {market_name} in region {region}.')
 
 
